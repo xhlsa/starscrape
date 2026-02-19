@@ -24,8 +24,16 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from link_budget import classify_shell
+from link_budget import (
+    classify_shell,
+    BEAM_HALF_ANGLE_DEG,
+    EARTH_RADIUS_KM,
+    MIN_USEFUL_EL_DEG,
+)
 from propagator import orbital_altitude_km
+
+# Nadir margin beyond BEAM_HALF_ANGLE_DEG that counts as "marginal" coverage
+_MARGINAL_EXTRA_DEG: float = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +147,21 @@ def analyze(
 
         active = ~np.isnan(pass_el) & (pass_el >= 0.0)
 
-        # Footprint / marginal counts
-        if pass_.link_likelihood == "likely":
-            n_footprint[ri:si] += active.astype(np.int32)
-        else:
-            n_marg[ri:si] += active.astype(np.int32)
+        # ── Per-timestep beam coverage (the key fix) ─────────────────────
+        # The pass-level link_likelihood is based on PEAK elevation.  A
+        # "likely" pass may only be in the beam footprint for 1-3 of its
+        # 10-15 visible minutes.  Count only the minutes where the satellite
+        # is genuinely inside the beam cone at that instant.
+        el_safe = np.where(active, pass_el, 0.0)   # avoid NaN in arcsin
+        sin_nadir = (EARTH_RADIUS_KM * np.cos(np.deg2rad(el_safe))
+                     / (EARTH_RADIUS_KM + pass_.orbital_alt_km))
+        nadir_ts = np.rad2deg(np.arcsin(np.clip(sin_nadir, -1.0, 1.0)))
+
+        in_beam_ts   = active & (nadir_ts <  BEAM_HALF_ANGLE_DEG)
+        near_edge_ts = active & (nadir_ts <  BEAM_HALF_ANGLE_DEG + _MARGINAL_EXTRA_DEG) & ~in_beam_ts
+
+        n_footprint[ri:si] += in_beam_ts.astype(np.int32)
+        n_marg[ri:si]      += near_edge_ts.astype(np.int32)
 
         # Update best-sat where this pass has higher elevation
         current_best = best_el[ri:si]
