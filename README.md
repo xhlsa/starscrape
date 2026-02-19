@@ -46,10 +46,11 @@ python main.py --lat 37.7749 --lon -122.4194 --min-elevation 20 --refresh
 | `--hours` | 24 | Prediction window length |
 | `--min-elevation` | 0 | Minimum peak elevation to report (degrees) |
 | `--format` | table | Output format: `table` or `json` |
-| `--all` | off | Include `unlikely` passes (default: only `likely`/`marginal`) |
+| `--all` | off | Include `marginal` and `unlikely` passes in the schedule (default: `likely` only, marginal shown only when filling a gap) |
 | `--verbose` | off | Append full per-pass table after the summary |
 | `--bin-hours` | 1.0 | Width of density histogram bins |
 | `--hysteresis` | 5.0 | Min elevation gain (°) required to trigger a handoff |
+| `--include-dtc` | off | Include Direct-to-Cell satellites (different service, excluded by default) |
 | `--refresh` | off | Force re-fetch of TLEs, ignoring cache |
 | `--chunk-size` | 500 | Satellites per SGP4 batch (tune RAM vs speed) |
 
@@ -60,20 +61,24 @@ Default output is a **handoff schedule** — one row per recommended satellite, 
 ```
 Starlink Coverage  (37.7749°N, -122.4194°E)
 Window  : 2026-02-19 04:00:00 → 2026-02-20 04:00:00 UTC
-TLEs    : 9548 sats (12 degraded)  | Filter : likely/marginal
+TLEs    : 8902 sats (12 degraded, 646 DTC excluded)  | Filter : likely/marginal
 
 Handoff Schedule
-  #   Satellite                NORAD   From (UTC)            To (UTC)              PkEl   PkAz
-  1   STARLINK-1234            45678   2026-02-19 04:02:00   2026-02-19 04:09:00   74.3°  212°
-  2   STARLINK-5678            46789   2026-02-19 04:09:00   2026-02-19 04:17:00   81.1°  188°
+  Start (UTC)        End         Dur  Satellite                  NORAD   PkEl  Shell                   Link
+  22:33 [2026-02-19]  22:40      7min  STARLINK-30821             58181    88°  V1/V1.5 (~559 km)       likely
+  22:40              22:45      5min  STARLINK-35951             66619    88°  Low orbit (475 km)      likely
+~ 23:12              23:14      2min  STARLINK-4068              52681    34°  V2 Mini (~540 km)       marginal (gap fill)
+  23:14              23:15      1min  ·── GAP ──·
   ...
 
 Coverage Summary
-  In-beam    : 100.0%   (1440 / 1440 min)
-  Longest gap: 0 min
-  Avg in-beam sats: 4.8   Peak: 9
-  ...
+  In-beam (likely)    23h 55min  (99.7%)
+  Covered (incl. marginal)  24h 00min  (100.0%)
+  Sats in beam        avg 4.9  (peak 11)
+  Longest gap         none
 ```
+
+Rows prefixed with `~` are **marginal gap-fills** — a marginal pass is the only available connection during that window. All other rows are `likely` (firmly in beam).
 
 With `--verbose`, a full per-pass table is appended showing rise/set/peak times, azimuth, slant range, shell, and link note for every detected pass.
 
