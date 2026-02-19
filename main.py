@@ -42,6 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Minimum pass peak elevation to report, degrees")
     p.add_argument("--format", choices=["table", "json"], default="table",
                    help="Output format")
+    p.add_argument("--all", action="store_true", dest="show_all",
+                   help="Show all passes regardless of link likelihood "
+                        "(default: only likely/marginal)")
     p.add_argument("--refresh", action="store_true",
                    help="Force re-fetch of TLEs from CelesTrak (ignore cache)")
     p.add_argument("--chunk-size", type=int, default=500, dest="chunk_size",
@@ -212,8 +215,10 @@ def main() -> None:
             p.peak_el_deg, p.orbital_alt_km
         )
 
-    # ── 8. Filter by min-elevation and sort ───────────────────────────────
+    # ── 8. Filter and sort ────────────────────────────────────────────────
     passes = [p for p in passes if p.peak_el_deg >= args.min_el]
+    if not args.show_all:
+        passes = [p for p in passes if p.link_likelihood in ("likely", "marginal")]
     passes.sort(key=lambda p: p.rise_time)
 
     _log(f"  {len(passes)} passes found.\n")
@@ -222,11 +227,13 @@ def main() -> None:
     if args.format == "json":
         print(format_json(passes))
     else:
+        showing = "all passes" if args.show_all else "likely/marginal passes only (--all to show all)"
         print(
             f"Starlink passes for ({args.lat:.4f}°N, {args.lon:.4f}°E)\n"
-            f"Window : {_fmt_time(start_utc)} → {_fmt_time(times[-1])} UTC\n"
-            f"Min el : {args.min_el:.1f}°   |   "
-            f"TLEs: {len(valid_tles)} sats ({n_degraded} degraded)\n"
+            f"Window  : {_fmt_time(start_utc)} → {_fmt_time(times[-1])} UTC\n"
+            f"Min el  : {args.min_el:.1f}°   |   "
+            f"Showing : {showing}\n"
+            f"TLEs    : {len(valid_tles)} sats ({n_degraded} degraded)\n"
         )
         print(format_table(passes))
 
