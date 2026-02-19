@@ -4,13 +4,13 @@ Usage examples
 --------------
   python main.py --lat 37.7749 --lon -122.4194
   python main.py --lat 51.5074 --lon -0.1278 --hours 12 --format json
-  python main.py --lat 40.7128 --lon -74.0060 --min-elevation 10 --refresh
+  python main.py --lat 40.7128 --lon -74.0060 --min-elevation 10 --verbose
+  python main.py --lat 37.7749 --lon -122.4194 --all --verbose
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time as time_mod
 from datetime import datetime, timedelta, timezone
@@ -21,6 +21,12 @@ from tle_cache import get_tles
 from propagator import geodetic_to_ecef, parse_tles, propagate_batch
 from pass_finder import Pass, find_passes
 from link_budget import classify_shell, estimate_link_likelihood
+from analyzer import (
+    analyze,
+    format_handoff_schedule,
+    format_summary,
+    format_analysis_json,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +49,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["table", "json"], default="table",
                    help="Output format")
     p.add_argument("--all", action="store_true", dest="show_all",
-                   help="Show all passes regardless of link likelihood "
+                   help="Include 'unlikely' passes in analysis "
                         "(default: only likely/marginal)")
+    p.add_argument("--verbose", action="store_true",
+                   help="Also print the full per-pass table after the summary")
+    p.add_argument("--bin-hours", type=float, default=1.0, dest="bin_hours",
+                   help="Width of density histogram bins in hours")
+    p.add_argument("--hysteresis", type=float, default=5.0,
+                   help="Min elevation gain (°) required to trigger a handoff "
+                        "(0 = show every minute-level transition)")
     p.add_argument("--refresh", action="store_true",
                    help="Force re-fetch of TLEs from CelesTrak (ignore cache)")
     p.add_argument("--chunk-size", type=int, default=500, dest="chunk_size",
@@ -89,24 +102,16 @@ def build_time_grid(
 
 
 # ---------------------------------------------------------------------------
-# Output formatting
+# Pass-table formatter (verbose mode)
 # ---------------------------------------------------------------------------
-
-_COL_WIDTH = {
-    "num":  4,
-    "name": 24,
-    "norad": 6,
-    "time": 19,
-}
-
 
 def _fmt_time(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def format_table(passes: list[Pass]) -> str:
+def _format_pass_table(passes: list[Pass]) -> str:
     if not passes:
-        return "No passes found in the specified time window."
+        return "No passes in the specified window."
 
     hdr = (
         f"{'#':<4} {'Satellite':<24} {'NORAD':>6}  "
@@ -118,9 +123,9 @@ def format_table(passes: list[Pass]) -> str:
     rows = [hdr, sep]
 
     for i, p in enumerate(passes, 1):
-        warn = "  ⚠ DEGRADED TLE" if p.degraded else ""
+        warn  = "  ⚠ DEGRADED TLE" if p.degraded else ""
         shell = classify_shell(p.orbital_alt_km)
-        row = (
+        rows.append(
             f"{i:<4} {p.sat_name:<24} {p.norad_id:>6}  "
             f"{_fmt_time(p.rise_time):<19}  "
             f"{_fmt_time(p.peak_time):<19}  "
@@ -132,33 +137,8 @@ def format_table(passes: list[Pass]) -> str:
             f"{p.link_likelihood:<8}  "
             f"{p.link_note}{warn}"
         )
-        rows.append(row)
 
     return "\n".join(rows)
-
-
-def format_json(passes: list[Pass]) -> str:
-    records = []
-    for p in passes:
-        records.append(
-            {
-                "satellite": p.sat_name,
-                "norad_id": p.norad_id,
-                "rise_time":  p.rise_time.isoformat(),
-                "peak_time":  p.peak_time.isoformat(),
-                "set_time":   p.set_time.isoformat(),
-                "peak_elevation_deg": round(p.peak_el_deg, 2),
-                "peak_azimuth_deg":   round(p.peak_az_deg, 2),
-                "min_slant_range_km": round(p.min_slant_km, 1),
-                "orbital_altitude_km": round(p.orbital_alt_km, 1),
-                "orbital_shell": classify_shell(p.orbital_alt_km),
-                "epoch_age_days": round(p.epoch_age_days, 3),
-                "degraded_tle": p.degraded,
-                "link_likelihood": p.link_likelihood,
-                "link_note": p.link_note,
-            }
-        )
-    return json.dumps(records, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -220,22 +200,41 @@ def main() -> None:
     if not args.show_all:
         passes = [p for p in passes if p.link_likelihood in ("likely", "marginal")]
     passes.sort(key=lambda p: p.rise_time)
-
     _log(f"  {len(passes)} passes found.\n")
 
-    # ── 9. Output ─────────────────────────────────────────────────────────
+    # ── 9. Coverage analysis ──────────────────────────────────────────────
+    _log("Running coverage analysis…")
+    result = analyze(passes, el_deg, az_deg, valid_tles, times,
+                     bin_hours=args.bin_hours,
+                     hysteresis_deg=args.hysteresis)
+    _log("")
+
+    # ── 10. Output ────────────────────────────────────────────────────────
     if args.format == "json":
-        print(format_json(passes))
-    else:
-        showing = "all passes" if args.show_all else "likely/marginal passes only (--all to show all)"
-        print(
-            f"Starlink passes for ({args.lat:.4f}°N, {args.lon:.4f}°E)\n"
-            f"Window  : {_fmt_time(start_utc)} → {_fmt_time(times[-1])} UTC\n"
-            f"Min el  : {args.min_el:.1f}°   |   "
-            f"Showing : {showing}\n"
-            f"TLEs    : {len(valid_tles)} sats ({n_degraded} degraded)\n"
-        )
-        print(format_table(passes))
+        print(format_analysis_json(result, passes, include_passes=args.verbose))
+        return
+
+    # Table mode — header
+    print(
+        f"Starlink Coverage  ({args.lat:.4f}°N, {args.lon:.4f}°E)\n"
+        f"Window  : {_fmt_time(start_utc)} → {_fmt_time(times[-1])} UTC\n"
+        f"TLEs    : {len(valid_tles)} sats ({n_degraded} degraded)  "
+        f"| Filter : {'all' if args.show_all else 'likely/marginal'}\n"
+    )
+
+    # Handoff schedule (primary output)
+    print("Handoff Schedule")
+    print(format_handoff_schedule(result, args.lat, args.lon))
+
+    # Summary + density
+    print()
+    print(format_summary(result, passes))
+
+    # Optional full pass table
+    if args.verbose:
+        print()
+        print("Full Pass List")
+        print(_format_pass_table(passes))
 
 
 def _log(msg: str) -> None:
