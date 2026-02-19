@@ -55,6 +55,8 @@ class HandoffEntry:
     orbital_alt_km: float = 0.0
     shell: str = ""
     link_likelihood: str = ""
+    # True when a marginal pass is bridging an otherwise-empty gap
+    is_marginal_fill: bool = False
 
 
 @dataclass
@@ -98,13 +100,14 @@ class AnalysisResult:
 # ---------------------------------------------------------------------------
 
 def analyze(
-    passes: list,                # list[pass_finder.Pass] — already filtered
+    passes: list,                # list[pass_finder.Pass] — likely passes
     el_deg: np.ndarray,          # (n_valid_sats, n_times)
     az_deg: np.ndarray,          # (n_valid_sats, n_times)
     valid_tles: list[dict],      # matches axis-0 of el_deg
     times: list[datetime],
     bin_hours: float = 1.0,
     hysteresis_deg: float = 5.0,
+    marginal_passes: list | None = None,  # shown only when they fill a gap
 ) -> AnalysisResult:
     """Build complete coverage analysis from pre-propagated arrays.
 
@@ -174,11 +177,30 @@ def analyze(
         for gi in global_idxs:
             best_link[gi] = pass_.link_likelihood
 
+    # Count marginal passes toward n_marg (coverage stats only; they don't
+    # drive the handoff schedule unless they fill a gap).
+    for pass_ in (marginal_passes or []):
+        sat_idx = norad_to_idx.get(pass_.norad_id)
+        if sat_idx is None:
+            continue
+        ri = max(0, int((pass_.rise_time - start_time).total_seconds() / step_s))
+        si = min(n_times, int((pass_.set_time  - start_time).total_seconds() / step_s) + 1)
+        if ri >= si:
+            continue
+        pass_el = el_deg[sat_idx, ri:si]
+        active = ~np.isnan(pass_el) & (pass_el >= 0.0)
+        el_safe = np.where(active, pass_el, 0.0)
+        sin_nadir = (EARTH_RADIUS_KM * np.cos(np.deg2rad(el_safe))
+                     / (EARTH_RADIUS_KM + pass_.orbital_alt_km))
+        nadir_ts = np.rad2deg(np.arcsin(np.clip(sin_nadir, -1.0, 1.0)))
+        near_edge_ts = active & (nadir_ts < BEAM_HALF_ANGLE_DEG + _MARGINAL_EXTRA_DEG)
+        n_marg[ri:si] += near_edge_ts.astype(np.int32)
+
     # ── Handoff schedule (pass-level granularity) ────────────────────────
-    # Built directly from Pass objects so each slot represents a full pass
-    # being the "primary" connection, not a per-minute snapshot.
+    # Built from likely passes; gaps are back-filled with the best available
+    # marginal pass (if one overlaps), marked is_marginal_fill=True.
     handoff_schedule = _build_pass_level_schedule(
-        passes, times, step_s, hysteresis_deg,
+        passes, marginal_passes or [], times, step_s, hysteresis_deg,
     )
 
     # ── Density bins ─────────────────────────────────────────────────────
@@ -228,6 +250,7 @@ def analyze(
 
 def _build_pass_level_schedule(
     passes: list,
+    marginal_passes: list,
     times: list[datetime],
     step_s: float,
     hysteresis_deg: float = 5.0,
@@ -241,6 +264,9 @@ def _build_pass_level_schedule(
 
     This avoids the per-minute churn that arises when dozens of Starlink sats
     are simultaneously visible at similar elevations.
+
+    After the likely-only schedule is built, any GAP entries are back-filled
+    with the best overlapping marginal pass (marked is_marginal_fill=True).
     """
     import heapq
 
@@ -329,7 +355,64 @@ def _build_pass_level_schedule(
             link_likelihood=committed.link_likelihood,
         ))
 
-    return _merge_consecutive(raw_entries)
+    merged = _merge_consecutive(raw_entries)
+    if marginal_passes:
+        merged = _fill_gaps_with_marginals(merged, marginal_passes)
+    return merged
+
+
+def _fill_gaps_with_marginals(
+    schedule: list[HandoffEntry],
+    marginal_passes: list,
+) -> list[HandoffEntry]:
+    """Replace GAP entries (or portions thereof) with the best overlapping
+    marginal pass, marked is_marginal_fill=True."""
+    result: list[HandoffEntry] = []
+    for entry in schedule:
+        if not entry.is_gap:
+            result.append(entry)
+            continue
+
+        gap_start, gap_end = entry.start_time, entry.end_time
+        overlapping = [
+            p for p in marginal_passes
+            if p.rise_time < gap_end and p.set_time > gap_start
+        ]
+
+        if not overlapping:
+            result.append(entry)
+            continue
+
+        best = max(overlapping, key=lambda p: p.peak_el_deg)
+        fill_start = max(gap_start, best.rise_time)
+        fill_end   = min(gap_end,   best.set_time)
+
+        if fill_start > gap_start:
+            result.append(HandoffEntry(
+                start_time=gap_start, end_time=fill_start,
+                duration_min=(fill_start - gap_start).total_seconds() / 60.0,
+                is_gap=True,
+            ))
+        result.append(HandoffEntry(
+            start_time=fill_start, end_time=fill_end,
+            duration_min=(fill_end - fill_start).total_seconds() / 60.0,
+            is_gap=False,
+            is_marginal_fill=True,
+            sat_name=best.sat_name,
+            norad_id=best.norad_id,
+            peak_el_deg=best.peak_el_deg,
+            orbital_alt_km=best.orbital_alt_km,
+            shell=classify_shell(best.orbital_alt_km),
+            link_likelihood="marginal",
+        ))
+        if fill_end < gap_end:
+            result.append(HandoffEntry(
+                start_time=fill_end, end_time=gap_end,
+                duration_min=(gap_end - fill_end).total_seconds() / 60.0,
+                is_gap=True,
+            ))
+
+    return result
 
 
 def _merge_consecutive(entries: list[HandoffEntry]) -> list[HandoffEntry]:
@@ -497,6 +580,13 @@ def format_handoff_schedule(result: AnalysisResult, lat: float, lon: float) -> s
                 f"  {start_str:<17}  {end_str:<8}  {dur_str:>5}  "
                 f"{'·── GAP ──·':<24}  {'':>6}  {'':>5}  "
                 f"{'':22}"
+            )
+        elif e.is_marginal_fill:
+            lines.append(
+                f"~ {start_str:<17}  {end_str:<8}  {dur_str:>5}  "
+                f"{e.sat_name:<24}  {e.norad_id:>6}  "
+                f"{e.peak_el_deg:>4.0f}°  "
+                f"{e.shell:<22}  marginal (gap fill)"
             )
         else:
             lines.append(

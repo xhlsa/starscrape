@@ -204,16 +204,28 @@ def main() -> None:
 
     # ── 8. Filter and sort ────────────────────────────────────────────────
     passes = [p for p in passes if p.peak_el_deg >= args.min_el]
-    if not args.show_all:
-        passes = [p for p in passes if p.link_likelihood in ("likely", "marginal")]
-    passes.sort(key=lambda p: p.rise_time)
-    _log(f"  {len(passes)} passes found.\n")
+    if args.show_all:
+        passes.sort(key=lambda p: p.rise_time)
+        marginal_passes: list = []
+    else:
+        marginal_passes = sorted(
+            [p for p in passes if p.link_likelihood == "marginal"],
+            key=lambda p: p.rise_time,
+        )
+        passes = sorted(
+            [p for p in passes if p.link_likelihood == "likely"],
+            key=lambda p: p.rise_time,
+        )
+    _log(f"  {len(passes)} likely passes found"
+         + (f", {len(marginal_passes)} marginal (shown only if they fill a gap).\n"
+            if marginal_passes else ".\n"))
 
     # ── 9. Coverage analysis ──────────────────────────────────────────────
     _log("Running coverage analysis…")
     result = analyze(passes, el_deg, az_deg, valid_tles, times,
                      bin_hours=args.bin_hours,
-                     hysteresis_deg=args.hysteresis)
+                     hysteresis_deg=args.hysteresis,
+                     marginal_passes=marginal_passes)
     _log("")
 
     # ── 10. Output ────────────────────────────────────────────────────────
