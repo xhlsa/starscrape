@@ -79,6 +79,7 @@ def _parse_tle_text(text: str) -> list[dict]:
                     "norad_id": norad_id,
                     "line1": line1,
                     "line2": line2,
+                    "is_dtc": "[DTC]" in name,
                 }
             )
             i += 3
@@ -104,11 +105,12 @@ def _tle_epoch_age_days(line1: str) -> float:
 
 
 def _annotate_epoch_ages(tles: list[dict]) -> list[dict]:
-    """Recompute epoch_age_days and degraded flag in-place (based on now)."""
+    """Recompute epoch_age_days, degraded, and is_dtc in-place (based on now)."""
     for rec in tles:
         age = _tle_epoch_age_days(rec["line1"])
         rec["epoch_age_days"] = age
         rec["degraded"] = age > TLE_EPOCH_WARN_DAYS
+        rec["is_dtc"] = "[DTC]" in rec["name"]
     return tles
 
 

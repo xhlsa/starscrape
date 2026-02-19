@@ -58,6 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hysteresis", type=float, default=5.0,
                    help="Min elevation gain (°) required to trigger a handoff "
                         "(0 = show every minute-level transition)")
+    p.add_argument("--include-dtc", action="store_true", dest="include_dtc",
+                   help="Include Direct-to-Cell sats (different service, excluded by default)")
     p.add_argument("--refresh", action="store_true",
                    help="Force re-fetch of TLEs from CelesTrak (ignore cache)")
     p.add_argument("--chunk-size", type=int, default=500, dest="chunk_size",
@@ -152,7 +154,12 @@ def main() -> None:
     _log("Fetching Starlink TLEs…")
     tles = get_tles(force_refresh=args.refresh)
     n_degraded = sum(1 for t in tles if t["degraded"])
-    _log(f"  {len(tles)} TLEs loaded ({n_degraded} with epoch age > 2 days).")
+    n_dtc = sum(1 for t in tles if t.get("is_dtc"))
+    if not args.include_dtc:
+        tles = [t for t in tles if not t.get("is_dtc")]
+        _log(f"  {len(tles)} TLEs loaded ({n_degraded} degraded, {n_dtc} DTC excluded — use --include-dtc to include).")
+    else:
+        _log(f"  {len(tles)} TLEs loaded ({n_degraded} degraded, {n_dtc} DTC included).")
 
     # ── 2. Parse to Satrec objects ────────────────────────────────────────
     _log("Parsing TLEs…")
@@ -215,10 +222,11 @@ def main() -> None:
         return
 
     # Table mode — header
+    dtc_note = f", {n_dtc} DTC excluded" if not args.include_dtc else f", {n_dtc} DTC included"
     print(
         f"Starlink Coverage  ({args.lat:.4f}°N, {args.lon:.4f}°E)\n"
         f"Window  : {_fmt_time(start_utc)} → {_fmt_time(times[-1])} UTC\n"
-        f"TLEs    : {len(valid_tles)} sats ({n_degraded} degraded)  "
+        f"TLEs    : {len(valid_tles)} sats ({n_degraded} degraded{dtc_note})  "
         f"| Filter : {'all' if args.show_all else 'likely/marginal'}\n"
     )
 
