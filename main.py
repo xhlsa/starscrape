@@ -61,6 +61,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(0 = show every minute-level transition)")
     p.add_argument("--include-dtc", action="store_true", dest="include_dtc",
                    help="Include Direct-to-Cell sats (different service, excluded by default)")
+    p.add_argument("--viz", action="store_true",
+                   help="Write visualisation data to viz_data.json (open viz.html to view)")
     p.add_argument("--refresh", action="store_true",
                    help="Force re-fetch of TLEs from CelesTrak (ignore cache)")
     p.add_argument("--chunk-size", type=int, default=500, dest="chunk_size",
@@ -229,7 +231,19 @@ def main() -> None:
                      marginal_passes=marginal_passes)
     _log("")
 
-    # ── 10. Output ────────────────────────────────────────────────────────
+    # ── 10. Visualisation export ──────────────────────────────────────────
+    if args.viz:
+        from export import build_viz_data, write_viz_json
+        viz_passes = passes + (marginal_passes or [])
+        viz_data = build_viz_data(
+            args.lat, args.lon, times,
+            viz_passes, result,
+            az_deg, el_deg, slant_km,
+            valid_tles,
+        )
+        write_viz_json("viz_data.json", viz_data)
+
+    # ── 11. Output ────────────────────────────────────────────────────────
     if args.format == "json":
         print(format_analysis_json(result, passes, include_passes=args.verbose))
         return
