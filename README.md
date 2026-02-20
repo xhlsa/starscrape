@@ -46,7 +46,7 @@ python main.py --lat 37.7749 --lon -122.4194 --min-elevation 20 --refresh
 | `--hours` | 24 | Prediction window length |
 | `--min-elevation` | 0 | Minimum peak elevation to report (degrees) |
 | `--format` | table | Output format: `table` or `json` |
-| `--all` | off | Include `marginal` and `unlikely` passes in the schedule (default: `likely` only, marginal shown only when filling a gap) |
+| `--all` | off | Include `unlikely` passes and show all `marginal` passes in the schedule (default: `likely` drives the schedule, `marginal` appears only when filling a gap) |
 | `--verbose` | off | Append full per-pass table after the summary |
 | `--bin-hours` | 1.0 | Width of density histogram bins |
 | `--hysteresis` | 5.0 | Min elevation gain (°) required to trigger a handoff |

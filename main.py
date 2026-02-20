@@ -49,8 +49,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["table", "json"], default="table",
                    help="Output format")
     p.add_argument("--all", action="store_true", dest="show_all",
-                   help="Include 'unlikely' passes in analysis "
-                        "(default: only likely/marginal)")
+                   help="Include all marginal and unlikely passes in the schedule "
+                        "(default: likely drives the schedule; marginal appears "
+                        "only when filling a coverage gap)")
     p.add_argument("--verbose", action="store_true",
                    help="Also print the full per-pass table after the summary")
     p.add_argument("--bin-hours", type=float, default=1.0, dest="bin_hours",
